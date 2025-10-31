@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  # Production-like container serving built static files via nginx
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_MODE: prod
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_APP_NAME: ${VITE_APP_NAME}
+        VITE_APP_VERSION: ${VITE_APP_VERSION}
+        VITE_MAX_FILE_SIZE: ${VITE_MAX_FILE_SIZE}
+        VITE_MAX_IMAGES: ${VITE_MAX_IMAGES}
+    ports:
+      - "4000:80"
+    restart: unless-stopped
+
+  # Developer container with hot reload (optional)
+  dev:
+    image: node:20-alpine
+    working_dir: /app
+    # Use corepack to enable pnpm, then run vite on 0.0.0.0
+    command: sh -c "corepack enable && corepack prepare pnpm@10.20.0 --activate && pnpm install && pnpm dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    environment:
+      CHOKIDAR_USEPOLLING: "1"
+      VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+      VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+      VITE_APP_NAME: ${VITE_APP_NAME}
+      VITE_APP_VERSION: ${VITE_APP_VERSION}
+      VITE_MAX_FILE_SIZE: ${VITE_MAX_FILE_SIZE}
+      VITE_MAX_IMAGES: ${VITE_MAX_IMAGES}
+    volumes:
+      - .:/app
+    # Improve file watching in containers on Windows
+    sysctls:
+      - net.core.somaxconn=1024

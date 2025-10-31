@@ -1,0 +1,11 @@
+node_modules
+dist
+.pnpm-store
+.git
+.gitignore
+.vscode
+.DS_Store
+*.log
+supabase/
+test-progress.md
+
