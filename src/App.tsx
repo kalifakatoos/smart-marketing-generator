@@ -11,6 +11,21 @@ interface GeneratedContent {
   imagePrompt: string;
 }
 
+// بنية جديدة للنتائج المتعددة
+interface ProductMarketing {
+  imageIndex: number;
+  imageName: string;
+  product: GeneratedContent;
+}
+
+interface GeneratedContentArray {
+  products: ProductMarketing[];
+  totalProducts: number;
+  processedImages: number;
+  skippedImages: number;
+  errors: string[];
+}
+
 interface UploadedImage {
   file: File;
   preview: string;
@@ -19,7 +34,7 @@ interface UploadedImage {
 
 function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
-  const [generatedContent, setGeneratedContent] = useState<GeneratedContent | null>(null);
+  const [generatedContents, setGeneratedContents] = useState<GeneratedContentArray | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [webhookUrl, setWebhookUrl] = useState('');
@@ -28,25 +43,20 @@ function App() {
   // عناصر تحكم قابلة للتعديل
   const [featuresCount, setFeaturesCount] = useState<number>(3);
   const [hashtagsCount, setHashtagsCount] = useState<number>(4);
-  const [descriptionSentences, setDescriptionSentences] = useState<number>(3);
+  const [descriptionSentences, setDescriptionSentences] = useState<number>(10);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
-  const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
-  const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-  const API_MODE = import.meta.env.VITE_API_MODE || 'direct';
 
-  // التحقق من وضع التشغيل
-  const useSupabase = API_MODE === 'supabase' && SUPABASE_URL && SUPABASE_ANON_KEY;
-  const useDirect = API_MODE === 'direct' && GEMINI_API_KEY;
+  // التحقق من توفر Gemini API Key
+  const hasGeminiKey = !!GEMINI_API_KEY;
 
   // Debug: log configuration
   console.log('App Configuration:', {
-    API_MODE,
-    hasGeminiKey: !!GEMINI_API_KEY,
-    hasSupabaseUrl: !!SUPABASE_URL,
-    useSupabase,
-    useDirect
+    hasGeminiKey,
+    apiMode: 'direct (Gemini API)',
+    geminiKeyPreview: GEMINI_API_KEY ? GEMINI_API_KEY.substring(0, 10) + '...' : 'undefined',
+    fullEnvCheck: import.meta.env
   });
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,14 +126,123 @@ function App() {
     event.preventDefault();
   };
 
+  const generateContentForImage = async (image: UploadedImage, imageIndex: number, imageName: string): Promise<ProductMarketing | null> => {
+    try {
+      const imagePart = {
+        inlineData: {
+          mimeType: image.file.type,
+          data: image.base64.split(',')[1]
+        }
+      };
+
+      const prompt = `
+قم بتحليل هذه الصورة بشكل تفصيلي ودقيق وأنشئ محتوى تسويقي احترافي للمنتج المعروض.
+
+المطلوب:
+1. productName: اسم جذاب ومختصر للمنتج في الصورة
+2. marketingCopy: جملتين قصيرتين وواضحتين للتسويق
+3. productDescription: وصف شامل ومفصل يتراوح بين ${descriptionSentences} ${descriptionSentences === 1 ? 'جملة' : 'جمل'} يتضمن جميع جوانب المنتج - الشكل واللون والحجم والفوائد والمزايا والاستخدامات والجودة والتصميم
+4. keyFeatures: ${featuresCount} ميزات رئيسية مع شرح مختصر لكل ميزة
+5. hashtags: ${hashtagsCount} هاشتاقات مناسبة للمحتوى
+6. imagePrompt: نص إنجليزي مهني وواضح لتوليد صورة مشابهة
+
+مهم: احلل الصورة بدقة ولا تتجاهل أي تفاصيل مرئية. اذكر كل ما تراه في الصورة.
+
+أعد JSON صالح فقط دون أي نص إضافي أو تنسيق.
+      `.trim();
+
+      const requestBody = {
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              imagePart
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens: 4096,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'object',
+            properties: {
+              productName: { type: 'string' },
+              marketingCopy: { type: 'string' },
+              productDescription: { type: 'string' },
+              keyFeatures: { type: 'array', items: { type: 'string' } },
+              hashtags: { type: 'array', items: { type: 'string' } },
+              imagePrompt: { type: 'string' }
+            },
+            required: ['productName','marketingCopy','productDescription','keyFeatures','hashtags','imagePrompt']
+          }
+        }
+      };
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody)
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Gemini API Error for image', imageIndex + 1, ':', response.status, errorText);
+        throw new Error(`خطأ في الاتصال: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const candidate = data.candidates?.[0];
+      const textPart = candidate?.content?.parts?.find((p: any) => typeof p?.text === 'string' && p.text.trim().length > 0);
+      let generatedText = (textPart?.text || '').trim();
+      
+      // تنظيف النص من تنسيق Markdown
+      if (generatedText.includes('```json')) {
+        generatedText = generatedText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      }
+      if (generatedText.includes('```')) {
+        generatedText = generatedText.replace(/```/g, '');
+      }
+      
+      // محاولة تنظيف JSON
+      const s = generatedText.indexOf('{');
+      const e = generatedText.lastIndexOf('}');
+      if (s !== -1 && e !== -1 && e > s) {
+        generatedText = generatedText.slice(s, e + 1);
+      }
+
+      const parsedContent = JSON.parse(generatedText);
+
+      if (!parsedContent) {
+        throw new Error('استجابة غير صحيحة من الخادم');
+      }
+
+      return {
+        imageIndex,
+        imageName,
+        product: parsedContent
+      };
+    } catch (err) {
+      console.error(`فشل في معالجة الصورة ${imageIndex + 1} (${imageName}):`, err);
+      return null;
+    }
+  };
+
   const generateContent = async () => {
     if (images.length === 0) {
       setError('يرجى اختيار صورة واحدة على الأقل');
       return;
     }
 
-    if (!useDirect && !useSupabase) {
-      setError('يرجى إعداد Gemini API Key أو Supabase في ملف .env');
+    if (!hasGeminiKey) {
+      setError('يرجى إعداد Gemini API Key في ملف .env');
       return;
     }
 
@@ -131,333 +250,50 @@ function App() {
     setError(null);
 
     try {
-      let parsedContent;
+      const products: ProductMarketing[] = [];
+      const errors: string[] = [];
+      let processedCount = 0;
 
-      if (useSupabase) {
-        // الوضع الآمن: استخدام Supabase Edge Function
-        const imagesData = images.map(image => ({
-          mimeType: image.file.type,
-          base64Data: image.base64.split(',')[1]
-        }));
-
-        const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/generate-marketing-content`;
+      // معالجة كل صورة على حدة
+      for (let i = 0; i < images.length; i++) {
+        const image = images[i];
+        console.log(`معالجة الصورة ${i + 1}/${images.length}: ${image.file.name}`);
         
-        const response = await fetch(edgeFunctionUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({ 
-            images: imagesData,
-            config: { 
-              featuresCount, 
-              hashtagsCount, 
-              descriptionSentences 
-            }
-          })
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error?.message || `خطأ في الاتصال: ${response.status}`);
+        const result = await generateContentForImage(image, i, image.file.name);
+        
+        if (result) {
+          products.push(result);
+        } else {
+          errors.push(`فشل في معالجة الصورة ${image.file.name}`);
         }
-
-        const result = await response.json();
-        parsedContent = result.data?.content || result.data;
         
+        processedCount++;
+        
+        // إظهار تقدم المعالجة
+        setError(null);
+      }
+
+      const result: GeneratedContentArray = {
+        products,
+        totalProducts: images.length,
+        processedImages: processedCount,
+        skippedImages: images.length - products.length,
+        errors
+      };
+
+      setGeneratedContents(result);
+
+      if (products.length === 0) {
+        setError('فشل في معالجة جميع الصور. يرجى المحاولة مرة أخرى.');
+      } else if (errors.length > 0) {
+        setError(`تم معالجة ${products.length} من ${images.length} صورة. بعض الصور فشلت: ${errors.join(', ')}`);
       } else {
-        // الوضع المباشر: استخدام Gemini API مباشرة
-        const imageParts = images.map(image => ({
-          inlineData: {
-            mimeType: image.file.type,
-            data: image.base64.split(',')[1]
-          }
-        }));
-
-        const prompt = `
-حلّل هذه الصور وأنشئ JSON موجز باللغة العربية:
-
-1. productName: اسم جذاب ومختصر
-2. marketingCopy: جملتين قصيرتين للتسويق
-3. productDescription: ${descriptionSentences} ${descriptionSentences === 1 ? 'جملة' : 'جمل'} وصفية مختصرة
-4. keyFeatures: ${featuresCount} ميزات رئيسية قصيرة
-5. hashtags: ${hashtagsCount} هاشتاقات مناسبة
-6. imagePrompt: نص إنجليزي موجز ومهني لتوليد صورة
-
-أعد JSON صالح فقط دون أي نص إضافي أو تنسيق.
-        `.trim();
-
-        const requestBody = {
-          contents: [
-            {
-              parts: [
-                { text: prompt },
-                ...imageParts
-              ]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            // زيادة الحد لتفادي استجابة مقطوعة بسبب MAX_TOKENS
-            maxOutputTokens: 2048,
-            // إجبار الخرج أن يكون JSON
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'object',
-              properties: {
-                productName: { type: 'string' },
-                marketingCopy: { type: 'string' },
-                productDescription: { type: 'string' },
-                keyFeatures: { type: 'array', items: { type: 'string' } },
-                hashtags: { type: 'array', items: { type: 'string' } },
-                imagePrompt: { type: 'string' }
-              },
-              required: ['productName','marketingCopy','productDescription','keyFeatures','hashtags','imagePrompt']
-            }
-          }
-        };
-
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(requestBody)
-          }
-        );
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('Gemini API Error:', response.status, errorText);
-          throw new Error(`خطأ في الاتصال: ${response.status} ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        console.log('Gemini API Response:', data);
-        
-        if (!data.candidates || data.candidates.length === 0) {
-          console.error('No candidates in response:', data);
-          throw new Error('استجابة غير صحيحة من Gemini API: لا توجد نتائج');
-        }
-
-        const candidate = data.candidates[0];
-        const finishReason = candidate.finishReason || data.candidates[0]?.finishReason;
-        if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
-          console.error('Invalid candidate structure:', candidate);
-          throw new Error('استجابة غير صحيحة من Gemini API: بنية غير صحيحة');
-        }
-
-        // ابحث عن أول جزء يحتوي على نص فعلي
-        const textPart = candidate.content.parts.find((p: any) => typeof p?.text === 'string' && p.text.trim().length > 0);
-        let generatedText = textPart?.text;
-
-        if (!generatedText) {
-          console.warn('لم يتم العثور على نص مباشر في الأجزاء، محاولة الاستخلاص الاحتياطي', candidate.content.parts);
-          // محاولة الاستخلاص الاحتياطي: البحث عن أول وآخر قوسين متوازنين
-          const joined = candidate.content.parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('\n');
-          const start = joined.indexOf('{');
-          const end = joined.lastIndexOf('}');
-          if (start !== -1 && end !== -1 && end > start) {
-            generatedText = joined.slice(start, end + 1);
-          }
-        }
-
-        if (!generatedText) {
-          const reasonInfo = finishReason === 'MAX_TOKENS' ? ' (الاستجابة قد تكون مقطوعة بسبب MAX_TOKENS)' : '';
-          console.error('No text in response parts:', candidate.content.parts);
-          throw new Error(`استجابة غير صحيحة من Gemini API: لا يوجد نص${reasonInfo}`);
-        }
-
-        console.log('Generated Text:', generatedText);
-        
-        // تنظيف النص من تنسيق Markdown
-        if (generatedText.includes('```json')) {
-          generatedText = generatedText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        }
-        if (generatedText.includes('```')) {
-          generatedText = generatedText.replace(/```/g, '');
-        }
-        generatedText = generatedText.trim();
-        
-        console.log('Cleaned Text:', generatedText);
-        
-        try {
-          parsedContent = JSON.parse(generatedText);
-          console.log('Parsed Content:', parsedContent);
-        } catch (parseErr) {
-          console.warn('JSON Parse Error, محاولة تنظيف/استخلاص JSON...', parseErr);
-          // تنظيف شيفرات Markdown إن وُجدت ثم استخلاص JSON بين الأقواس
-          let textForParse = generatedText.trim();
-          if (textForParse.startsWith('```json')) {
-            textForParse = textForParse.replace(/^```json\s*/, '');
-          }
-          if (textForParse.endsWith('```')) {
-            textForParse = textForParse.replace(/\s*```$/, '');
-          }
-
-          const s = textForParse.indexOf('{');
-          const e = textForParse.lastIndexOf('}');
-          if (s !== -1 && e !== -1 && e > s) {
-            const slice = textForParse.slice(s, e + 1);
-            try {
-              parsedContent = JSON.parse(slice);
-              console.log('Parsed Content (fallback):', parsedContent);
-            } catch (err2) {
-              const reasonInfo = finishReason === 'MAX_TOKENS' ? '؛ يبدو أن الاستجابة مقطوعة (MAX_TOKENS). جرب تقليل عدد الصور أو المحاولة مجدداً.' : '';
-              console.error('Fallback JSON Parse Error:', err2, 'Slice:', slice);
-              throw new Error(`فشل في تحليل النص المولد كـ JSON${reasonInfo}`);
-            }
-          } else {
-            const reasonInfo = finishReason === 'MAX_TOKENS' ? '؛ يبدو أن الاستجابة مقطوعة (MAX_TOKENS). جرب تقليل عدد الصور أو المحاولة مجدداً.' : '';
-            console.error('No JSON braces found in text:', textForParse);
-            throw new Error(`فشل في تحليل النص المولد كـ JSON${reasonInfo}`);
-          }
-        }
+        setError(null);
       }
-      
-      if (!parsedContent) {
-        throw new Error('استجابة غير صحيحة من الخادم');
-      }
-      
-      setGeneratedContent(parsedContent);
+
     } catch (err) {
-      console.error('تفاصيل الخطأ (المحاولة الأولى):', err);
-      const errMsg = err instanceof Error ? err.message : String(err);
-      const shouldRetry = /MAX_TOKENS|لا يوجد نص|فشل في تحليل النص/.test(errMsg) && images.length > 0;
-
-      if (shouldRetry) {
-        try {
-          // محاولة ثانية تلقائية: صورة واحدة وحدود أصغر
-          const retryImages = [images[0]];
-          const smallFeatures = Math.min(featuresCount, 3);
-          const smallHashtags = Math.min(hashtagsCount, 3);
-          const smallDesc = Math.min(descriptionSentences, 2);
-
-          let parsedContent;
-          if (useSupabase) {
-            const imagesData = retryImages.map(image => ({
-              mimeType: image.file.type,
-              base64Data: image.base64.split(',')[1]
-            }));
-
-            const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/generate-marketing-content`;
-            const response = await fetch(edgeFunctionUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-              },
-              body: JSON.stringify({
-                images: imagesData,
-                config: {
-                  featuresCount: smallFeatures,
-                  hashtagsCount: smallHashtags,
-                  descriptionSentences: smallDesc
-                }
-              })
-            });
-
-            if (!response.ok) {
-              const errorData = await response.json();
-              throw new Error(errorData.error?.message || `خطأ في الاتصال: ${response.status}`);
-            }
-
-            const result = await response.json();
-            parsedContent = result.data?.content || result.data;
-          } else {
-            const imageParts = retryImages.map(image => ({
-              inlineData: {
-                mimeType: image.file.type,
-                data: image.base64.split(',')[1]
-              }
-            }));
-
-            const prompt = `
-حلّل هذه الصور وأنشئ JSON موجز باللغة العربية:
-
-1. productName: اسم جذاب ومختصر
-2. marketingCopy: جملة واحدة قصيرة للتسويق
-3. productDescription: ${smallDesc} ${smallDesc === 1 ? 'جملة' : 'جمل'} وصفية مختصرة
-4. keyFeatures: ${smallFeatures} ميزات رئيسية قصيرة
-5. hashtags: ${smallHashtags} هاشتاقات مناسبة
-6. imagePrompt: نص إنجليزي موجز ومهني لتوليد صورة
-
-أعد JSON صالح فقط دون أي نص إضافي أو تنسيق.
-            `.trim();
-
-            const requestBody = {
-              contents: [
-                {
-                  parts: [
-                    { text: prompt },
-                    ...imageParts
-                  ]
-                }
-              ],
-              generationConfig: {
-                temperature: 0.7,
-                topK: 40,
-                topP: 0.95,
-                maxOutputTokens: 1024,
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: 'object',
-                  properties: {
-                    productName: { type: 'string' },
-                    marketingCopy: { type: 'string' },
-                    productDescription: { type: 'string' },
-                    keyFeatures: { type: 'array', items: { type: 'string' } },
-                    hashtags: { type: 'array', items: { type: 'string' } },
-                    imagePrompt: { type: 'string' }
-                  },
-                  required: ['productName','marketingCopy','productDescription','keyFeatures','hashtags','imagePrompt']
-                }
-              }
-            };
-
-            const response = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(requestBody)
-              }
-            );
-
-            if (!response.ok) {
-              const errorText = await response.text();
-              console.error('Gemini API Retry Error:', response.status, errorText);
-              throw new Error(`خطأ في الاتصال: ${response.status} ${response.statusText}`);
-            }
-
-            const data = await response.json();
-            const candidate = data.candidates?.[0];
-            const textPart = candidate?.content?.parts?.find((p: any) => typeof p?.text === 'string' && p.text.trim().length > 0);
-            const generatedText = (textPart?.text || '').trim();
-            const clean = generatedText
-              .replace(/^```json\s*/,'')
-              .replace(/\s*```$/,'');
-            parsedContent = JSON.parse(clean);
-          }
-
-          if (!parsedContent) throw new Error('استجابة غير صحيحة من الخادم بعد إعادة المحاولة');
-          setGeneratedContent(parsedContent);
-          setError(null);
-          return; // أنهِ التنفيذ بعد نجاح إعادة المحاولة
-        } catch (retryErr) {
-          console.error('فشل إعادة المحاولة:', retryErr);
-          setError(`خطأ في توليد المحتوى: ${retryErr instanceof Error ? retryErr.message : 'خطأ غير معروف'}`);
-        }
-      } else {
-        setError(`خطأ في توليد المحتوى: ${errMsg}`);
-      }
+      console.error('خطأ عام في توليد المحتوى:', err);
+      setError(`خطأ في توليد المحتوى: ${err instanceof Error ? err.message : 'خطأ غير معروف'}`);
     } finally {
       setIsGenerating(false);
     }
@@ -474,20 +310,20 @@ function App() {
   };
 
   const exportToJSON = () => {
-    if (!generatedContent) return;
+    if (!generatedContents) return;
     
-    const dataStr = JSON.stringify(generatedContent, null, 2);
+    const dataStr = JSON.stringify(generatedContents, null, 2);
     const dataBlob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(dataBlob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${generatedContent.productName.replace(/[^\w\s]/gi, '')}-marketing-content.json`;
+    link.download = `multiple-products-marketing-content.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   const sendToWebhook = async () => {
-    if (!generatedContent || !webhookUrl.trim()) {
+    if (!generatedContents || !webhookUrl.trim()) {
       setError('يرجى إدخال رابط webhook صحيح');
       return;
     }
@@ -496,34 +332,163 @@ function App() {
     setError(null);
 
     try {
-      const payload = {
-        content: generatedContent,
-        images: images.map(image => ({
-          base64: image.base64,
-          fileName: image.file.name,
-          mimeType: image.file.type
-        })),
-        timestamp: new Date().toISOString()
+      // إنشاء FormData لإرسال جميع المنتجات
+      const formData = new FormData();
+      
+      // إنشاء محتوى JSON شامل لجميع المنتجات
+      const allProductsData = {
+        ...generatedContents,
+        metadata: {
+          totalImages: images.length,
+          generatedAt: new Date().toISOString(),
+          apiMode: 'direct (Gemini API)',
+          descriptionSentences: descriptionSentences,
+          featuresCount: featuresCount,
+          hashtagsCount: hashtagsCount,
+          imageInfo: images.map(image => ({
+            fileName: image.file.name,
+            mimeType: image.file.type,
+            fileSize: image.file.size,
+            sizeFormatted: `${(image.file.size / 1024 / 1024).toFixed(2)} MB`
+          }))
+        }
       };
+      
+      const contentBlob = new Blob([JSON.stringify(allProductsData, null, 2)], {
+        type: 'application/json'
+      });
+      formData.append('all-products-marketing-content.json', contentBlob, 'all-products-marketing-content.json');
+      
+      // إضافة جميع الصور الأصلية كملفات
+      images.forEach((image, index) => {
+        formData.append(`image_${index + 1}`, image.file, image.file.name);
+      });
 
       const response = await fetch(webhookUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload)
+        body: formData
       });
 
       if (!response.ok) {
         throw new Error(`خطأ في الإرسال: ${response.status}`);
       }
 
-      alert('تم إرسال المحتوى بنجاح!');
+      alert(`تم إرسال ${generatedContents.products.length} منتج بنجاح إلى Webhook!`);
     } catch (err) {
       setError(`خطأ في إرسال البيانات: ${err instanceof Error ? err.message : 'خطأ غير معروف'}`);
     } finally {
       setIsSendingToWebhook(false);
     }
+  };
+
+  const renderProductCard = (productData: ProductMarketing) => {
+    const { imageIndex, imageName, product } = productData;
+    
+    return (
+      <div key={imageIndex} className="bg-gray-800 rounded-lg p-6 mb-6">
+        <div className="flex items-center mb-4">
+          <img 
+            src={images[imageIndex].preview} 
+            alt={`صورة ${imageIndex + 1}`}
+            className="w-16 h-16 object-cover rounded-lg ml-4"
+          />
+          <div>
+            <h2 className="text-xl font-bold">{product.productName}</h2>
+            <p className="text-gray-400 text-sm">الصورة {imageIndex + 1}: {imageName}</p>
+          </div>
+        </div>
+
+        {/* النسخ التسويقي */}
+        <div className="mb-4">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-lg font-semibold">النسخ التسويقي</h3>
+            <button
+              onClick={() => copyToClipboard(product.marketingCopy, `marketingCopy_${imageIndex}`)}
+              className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+            >
+              {copiedField === `marketingCopy_${imageIndex}` ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
+              نسخ
+            </button>
+          </div>
+          <p className="text-gray-300 leading-relaxed">{product.marketingCopy}</p>
+        </div>
+
+        {/* الوصف التفصيلي */}
+        <div className="mb-4">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-lg font-semibold">الوصف التفصيلي الشامل</h3>
+            <button
+              onClick={() => copyToClipboard(product.productDescription, `productDescription_${imageIndex}`)}
+              className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+            >
+              {copiedField === `productDescription_${imageIndex}` ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
+              نسخ
+            </button>
+          </div>
+          <p className="text-gray-300 leading-relaxed whitespace-pre-wrap">{product.productDescription}</p>
+        </div>
+
+        {/* الميزات الرئيسية */}
+        <div className="mb-4">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-lg font-semibold">الميزات الرئيسية</h3>
+            <button
+              onClick={() => copyToClipboard(product.keyFeatures.join('\n'), `keyFeatures_${imageIndex}`)}
+              className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+            >
+              {copiedField === `keyFeatures_${imageIndex}` ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
+              نسخ
+            </button>
+          </div>
+          <ul className="space-y-1">
+            {product.keyFeatures.map((feature, index) => (
+              <li key={index} className="text-gray-300 flex items-start">
+                <span className="text-blue-400 ml-2">•</span>
+                {feature}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* الهاشتاغات */}
+        <div className="mb-4">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-lg font-semibold">الهاشتاغات</h3>
+            <button
+              onClick={() => copyToClipboard(product.hashtags.join(' '), `hashtags_${imageIndex}`)}
+              className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+            >
+              {copiedField === `hashtags_${imageIndex}` ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
+              نسخ
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {product.hashtags.map((hashtag, index) => (
+              <span key={index} className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-full text-sm transition-colors">
+                {hashtag}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* موجه الصورة */}
+        <div>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-lg font-semibold">موجه إنشاء الصورة</h3>
+            <button
+              onClick={() => copyToClipboard(product.imagePrompt, `imagePrompt_${imageIndex}`)}
+              className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+            >
+              {copiedField === `imagePrompt_${imageIndex}` ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
+              نسخ
+            </button>
+          </div>
+          <pre className="bg-gray-900 p-3 rounded border border-gray-600 text-sm text-gray-300 whitespace-pre-wrap font-mono">
+            {product.imagePrompt}
+          </pre>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -535,14 +500,14 @@ function App() {
             مسوّق المنتجات الذكي
           </h1>
           <p className="text-xl text-gray-300 max-w-2xl mx-auto">
-            قم برفع صور منتجاتك ودع الذكاء الاصطناعي ينشئ محتوى تسويقي احترافي ومؤثر
+            قم برفع صور منتجاتك المختلفة ودع الذكاء الاصطناعي ينشئ محتوى تسويقي منفصل لكل منتج
           </p>
           
           {/* شارة الوضع */}
           <div className="mt-4 inline-flex items-center px-4 py-2 bg-gray-800 rounded-full text-sm">
             <span className="text-gray-400">الوضع:</span>
-            <span className={`mr-2 font-semibold ${useDirect ? 'text-green-400' : useSupabase ? 'text-blue-400' : 'text-red-400'}`}>
-              {useDirect ? '✓ Gemini API مباشر' : useSupabase ? '✓ Supabase Edge Function' : '✗ غير مُعد'}
+            <span className={`mr-2 font-semibold ${hasGeminiKey ? 'text-green-400' : 'text-red-400'}`}>
+              {hasGeminiKey ? '✓ Gemini API مباشر' : '✗ غير مُعد'}
             </span>
           </div>
         </div>
@@ -571,7 +536,9 @@ function App() {
           {/* معاينة الصور */}
           {images.length > 0 && (
             <div className="mt-6">
-              <h3 className="text-lg font-semibold mb-3">الصور المختارة:</h3>
+              <h3 className="text-lg font-semibold mb-3">
+                الصور المختارة: {images.length}
+              </h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {images.map((image, index) => (
                   <div key={index} className="relative group">
@@ -589,6 +556,9 @@ function App() {
                     >
                       <X className="h-4 w-4" />
                     </button>
+                    <div className="absolute bottom-2 right-2 bg-black bg-opacity-75 px-2 py-1 rounded text-xs">
+                      {image.file.name.length > 10 ? image.file.name.substring(0, 10) + '...' : image.file.name}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -613,9 +583,9 @@ function App() {
                 className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" />
             </div>
             <div>
-              <label className="block text-sm text-gray-300 mb-1">عدد جمل الوصف</label>
-              <input type="number" min={1} max={6} value={descriptionSentences}
-                onChange={(e) => setDescriptionSentences(Math.max(1, Math.min(6, Number(e.target.value))))}
+              <label className="block text-sm text-gray-300 mb-1">عدد جمل الوصف (1-10)</label>
+              <input type="number" min={1} max={10} value={descriptionSentences}
+                onChange={(e) => setDescriptionSentences(Math.max(1, Math.min(10, Number(e.target.value))))}
                 className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" />
             </div>
           </div>
@@ -625,16 +595,16 @@ function App() {
         <div className="text-center mb-8">
           <button
             onClick={generateContent}
-            disabled={images.length === 0 || isGenerating}
+            disabled={images.length === 0 || isGenerating || !hasGeminiKey}
             className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed px-8 py-3 rounded-lg font-semibold transition-all flex items-center mx-auto"
           >
             {isGenerating ? (
               <>
                 <Loader2 className="animate-spin ml-2 h-5 w-5" />
-                جاري التوليد...
+                جاري معالجة الصور... ({generatedContents?.processedImages || 0}/{images.length})
               </>
             ) : (
-              'أنشئ المحتوى'
+              `أنشئ المحتوى للمنتجات (${images.length} صور)`
             )}
           </button>
         </div>
@@ -648,110 +618,43 @@ function App() {
         )}
 
         {/* النتائج */}
-        {generatedContent && (
-          <div className="space-y-8">
+        {generatedContents && (
+          <div className="space-y-6">
+            {/* ملخص النتائج */}
             <div className="bg-gray-800 rounded-lg p-6">
-              <h2 className="text-2xl font-bold mb-4 text-center">{generatedContent.productName}</h2>
-            </div>
-
-            {/* النسخ التسويقي */}
-            <div className="bg-gray-800 rounded-lg p-6">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="text-xl font-semibold">النسخ التسويقي</h3>
-                <button
-                  onClick={() => copyToClipboard(generatedContent.marketingCopy, 'marketingCopy')}
-                  className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
-                >
-                  {copiedField === 'marketingCopy' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
-                  نسخ
-                </button>
-              </div>
-              <p className="text-gray-300 leading-relaxed">{generatedContent.marketingCopy}</p>
-            </div>
-
-            {/* الوصف التفصيلي */}
-            <div className="bg-gray-800 rounded-lg p-6">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="text-xl font-semibold">الوصف التفصيلي</h3>
-                <button
-                  onClick={() => copyToClipboard(generatedContent.productDescription, 'productDescription')}
-                  className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
-                >
-                  {copiedField === 'productDescription' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
-                  نسخ
-                </button>
-              </div>
-              <p className="text-gray-300 leading-relaxed">{generatedContent.productDescription}</p>
-            </div>
-
-            {/* الميزات الرئيسية */}
-            <div className="bg-gray-800 rounded-lg p-6">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="text-xl font-semibold">الميزات الرئيسية</h3>
-                <button
-                  onClick={() => copyToClipboard(generatedContent.keyFeatures.join('\n'), 'keyFeatures')}
-                  className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
-                >
-                  {copiedField === 'keyFeatures' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
-                  نسخ
-                </button>
-              </div>
-              <ul className="space-y-2">
-                {generatedContent.keyFeatures.map((feature, index) => (
-                  <li key={index} className="text-gray-300 flex items-start">
-                    <span className="text-blue-400 ml-2">•</span>
-                    {feature}
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            {/* الهاشتاغات */}
-            <div className="bg-gray-800 rounded-lg p-6">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="text-xl font-semibold">الهاشتاغات</h3>
-                <button
-                  onClick={() => copyToClipboard(generatedContent.hashtags.join(' '), 'hashtags')}
-                  className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
-                >
-                  {copiedField === 'hashtags' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
-                  نسخ
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {generatedContent.hashtags.map((hashtag, index) => (
-                  <span key={index} className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-full text-sm transition-colors">
-                    {hashtag}
-                  </span>
-                ))}
+              <h2 className="text-2xl font-bold mb-4 text-center">
+                نتائج معالجة المنتجات
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+                <div className="bg-gray-700 rounded p-4">
+                  <div className="text-2xl font-bold text-green-400">{generatedContents.products.length}</div>
+                  <div className="text-sm text-gray-300">منتج تم معالجته بنجاح</div>
+                </div>
+                <div className="bg-gray-700 rounded p-4">
+                  <div className="text-2xl font-bold text-blue-400">{generatedContents.totalProducts}</div>
+                  <div className="text-sm text-gray-300">إجمالي المنتجات</div>
+                </div>
+                <div className="bg-gray-700 rounded p-4">
+                  <div className="text-2xl font-bold text-red-400">{generatedContents.skippedImages}</div>
+                  <div className="text-sm text-gray-300">منتجات فشلت</div>
+                </div>
               </div>
             </div>
 
-            {/* موجه الصورة */}
-            <div className="bg-gray-800 rounded-lg p-6">
-              <div className="flex justify-between items-center mb-3">
-                <h3 className="text-xl font-semibold">موجه إنشاء الصورة</h3>
-                <button
-                  onClick={() => copyToClipboard(generatedContent.imagePrompt, 'imagePrompt')}
-                  className="flex items-center px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
-                >
-                  {copiedField === 'imagePrompt' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4 ml-1" />}
-                  نسخ
-                </button>
-              </div>
-              <pre className="bg-gray-900 p-4 rounded border border-gray-600 text-sm text-gray-300 whitespace-pre-wrap font-mono">
-                {generatedContent.imagePrompt}
-              </pre>
+            {/* عرض جميع المنتجات */}
+            <div className="space-y-6">
+              <h3 className="text-xl font-semibold text-center">جميع المنتجات المُولدة</h3>
+              {generatedContents.products.map(renderProductCard)}
             </div>
 
             {/* أزرار التصدير والإرسال */}
-            <div className="flex flex-wrap gap-4 justify-center">
+            <div className="flex flex-wrap gap-4 justify-center mt-8">
               <button
                 onClick={exportToJSON}
                 className="flex items-center bg-green-600 hover:bg-green-700 px-6 py-3 rounded-lg font-semibold transition-colors"
               >
                 <Download className="h-5 w-5 ml-2" />
-                تصدير المحتوى إلى JSON
+                تصدير جميع المنتجات إلى JSON
               </button>
 
               <div className="flex gap-2">
@@ -764,7 +667,7 @@ function App() {
                 />
                 <button
                   onClick={sendToWebhook}
-                  disabled={!webhookUrl.trim() || isSendingToWebhook}
+                  disabled={!webhookUrl.trim() || isSendingToWebhook || generatedContents.products.length === 0}
                   className="flex items-center bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed px-6 py-3 rounded-lg font-semibold transition-colors"
                 >
                   {isSendingToWebhook ? (
@@ -772,7 +675,7 @@ function App() {
                   ) : (
                     <Send className="h-5 w-5 ml-2" />
                   )}
-                  إرسال إلى Webhook
+                  إرسال جميع المنتجات ({generatedContents.products.length}) للـ Webhook
                 </button>
               </div>
             </div>
