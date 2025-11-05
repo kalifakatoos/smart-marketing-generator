@@ -1,41 +1,53 @@
 version: "3.8"
 
 services:
-  # Production-like container serving built static files via nginx
+  # Production web server with nginx
   web:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         BUILD_MODE: prod
-        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
-        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
         VITE_APP_NAME: ${VITE_APP_NAME}
         VITE_APP_VERSION: ${VITE_APP_VERSION}
         VITE_MAX_FILE_SIZE: ${VITE_MAX_FILE_SIZE}
         VITE_MAX_IMAGES: ${VITE_MAX_IMAGES}
+        VITE_GEMINI_API_KEY: ${VITE_GEMINI_API_KEY}
     ports:
       - "4000:80"
     restart: unless-stopped
+    environment:
+      - TZ=UTC
+    networks:
+      - smart-marketing-network
 
-  # Developer container with hot reload (optional)
+  # Development server with hot reload
   dev:
     image: node:20-alpine
     working_dir: /app
-    # Use corepack to enable pnpm, then run vite on 0.0.0.0
     command: sh -c "corepack enable && corepack prepare pnpm@10.20.0 --activate && pnpm install && pnpm dev -- --host 0.0.0.0"
     ports:
       - "5173:5173"
+      - "4173:4173"
     environment:
-      CHOKIDAR_USEPOLLING: "1"
-      VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
-      VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
-      VITE_APP_NAME: ${VITE_APP_NAME}
-      VITE_APP_VERSION: ${VITE_APP_VERSION}
-      VITE_MAX_FILE_SIZE: ${VITE_MAX_FILE_SIZE}
-      VITE_MAX_IMAGES: ${VITE_MAX_IMAGES}
+      - CHOKIDAR_USEPOLLING=1
+      - TZ=UTC
+      - VITE_APP_NAME=${VITE_APP_NAME}
+      - VITE_APP_VERSION=${VITE_APP_VERSION}
+      - VITE_MAX_FILE_SIZE=${VITE_MAX_FILE_SIZE}
+      - VITE_MAX_IMAGES=${VITE_MAX_IMAGES}
+      - VITE_GEMINI_API_KEY=${VITE_GEMINI_API_KEY}
     volumes:
       - .:/app
-    # Improve file watching in containers on Windows
+      - /app/node_modules
+      - /app/.vite
     sysctls:
       - net.core.somaxconn=1024
+    networks:
+      - smart-marketing-network
+    stdin_open: true
+    tty: true
+
+networks:
+  smart-marketing-network:
+    driver: bridge
